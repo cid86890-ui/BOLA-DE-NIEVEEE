@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Bola de nieve </title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
+  body {
+    /* Cereza opaco (mate) */
+    background: radial-gradient(ellipse at 50% 42%, #8f1d31 0%, #6f1324 55%, #4e0c19 100%);
+    touch-action: none; -webkit-user-select: none; user-select: none;
+    font-family: Georgia, serif;
+  }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #stars { z-index: 0; pointer-events: none; }
+  #halo {
+    position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity 1.4s ease;
+    background: radial-gradient(circle at var(--hx, 50%) var(--hy, 42%),
+      rgba(255,190,110,.34) 0%, rgba(255,150,80,.12) 30%, transparent 55%);
+  }
+  #halo.on { opacity: 1; }
+  #gl { z-index: 2; cursor: grab; touch-action: none; }
+  #gl:active { cursor: grabbing; }
+
+  /* Botón dorado de la lámpara */
+  #lamp {
+    position: fixed; z-index: 3; width: 46px; height: 46px; border-radius: 50%; border: none; padding: 0;
+    cursor: pointer; transform: translate(-50%, -50%); display: grid; place-items: center;
+    background: radial-gradient(circle at 35% 30%, #fff3b0 0%, #f5cd54 35%, #c9951f 75%, #8a6210 100%);
+    box-shadow: 0 5px 10px rgba(0,0,0,.45), inset 0 -3px 5px rgba(90,55,0,.5), inset 0 2px 4px rgba(255,255,255,.65);
+    transition: box-shadow .5s ease, transform .15s ease;
+  }
+  #lamp:active { transform: translate(-50%, -47%) scale(.95); }
+  #lamp.on {
+    box-shadow: 0 0 22px 8px rgba(255,200,90,.55), 0 5px 10px rgba(0,0,0,.45),
+                inset 0 -3px 5px rgba(90,55,0,.5), inset 0 2px 4px rgba(255,255,255,.65);
+  }
+  #lamp svg { width: 20px; height: 20px; stroke: #6b4609; opacity: .85; }
+  #hint {
+    position: fixed; z-index: 3; top: 14px; left: 0; right: 0; text-align: center; pointer-events: none;
+    color: rgba(255,255,255,.75); font-size: 14px; letter-spacing: .06em; transition: opacity 1s;
+  }
+</style>
+</head>
+<body>
+<canvas id="stars"></canvas>
+<div id="halo"></div>
+<div id="hint">Arrastra o desliza para girar la bola ✦</div>
+<button id="lamp" aria-label="Encender o apagar la lámpara y la música" aria-pressed="false">
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round">
+    <path d="M12 3v8"/><path d="M6.6 6.8a8 8 0 1 0 10.8 0"/>
+  </svg>
+</button>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ============================================================
+   🎵 CANCIÓN: cuando elijas una, pon aquí la ruta de tu archivo
+   (por ejemplo 'musica/cancion.mp3'). Si lo dejas vacío suena
+   una cajita musical integrada ("Jingle Bells").
+   ============================================================ */
+const SONG_URL = 'Navidad.mp3';  // <-- pon aquí la ruta de tu canción (o deja vacío)
+
+/* ---------- Fondo: puntitos blancos aleatorios ---------- */
+const starsCv = document.getElementById('stars');
+const sctx = starsCv.getContext('2d');
+let dots = [];
+function initStars() {
+  const dpr = Math.min(devicePixelRatio, 2);
+  starsCv.width = innerWidth * dpr; starsCv.height = innerHeight * dpr;
+  const n = Math.floor(innerWidth * innerHeight / 5500);
+  dots = Array.from({ length: n }, () => ({
+    x: Math.random(), y: Math.random(), r: Math.random() * 1.6 + .4,
+    a: Math.random() * .6 + .3, s: Math.random() * 1.5 + .4, p: Math.random() * 6.28
+  }));
+}
+function drawStars(t) {
+  const w = starsCv.width, h = starsCv.height, dpr = w / innerWidth;
+  sctx.clearRect(0, 0, w, h); sctx.fillStyle = '#fff';
+  for (const d of dots) {
+    sctx.globalAlpha = d.a * (.6 + .4 * Math.sin(t * d.s + d.p));
+    sctx.beginPath(); sctx.arc(d.x * w, d.y * h, d.r * dpr, 0, 6.283); sctx.fill();
+  }
+}
+
+/* ---------- Renderer / escena ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.domElement.id = 'gl';
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x663344, 0.35));
+const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(-3, 5, 6); scene.add(key);
+const rimL = new THREE.DirectionalLight(0xffb0b0, 0.8); rimL.position.set(4, 2, -4); scene.add(rimL);
+
+/* pivote = lo que gira; content = objeto centrado verticalmente */
+const pivot = new THREE.Group(); scene.add(pivot);
+const content = new THREE.Group(); content.position.y = 0.6; pivot.add(content);
+
+/* ---------- Texturas auxiliares ---------- */
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const glowTex = canvasTex(128, 128, (g) => {
+  const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.25, 'rgba(255,255,255,.55)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+});
+const flakeTex = canvasTex(64, 64, (g) => {
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.5, 'rgba(255,255,255,.8)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+});
+const hlTex = canvasTex(256, 128, (g) => {
+  g.translate(128, 64); g.scale(1, .42);
+  const gr = g.createRadialGradient(0, 0, 0, 0, 0, 120);
+  gr.addColorStop(0, 'rgba(255,255,255,.95)'); gr.addColorStop(.5, 'rgba(255,255,255,.35)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(-128, -128, 256, 256);
+});
+
+/* ---------- Bola de cristal ---------- */
+const R = 2;
+const sphGeo = new THREE.SphereGeometry(R, 96, 64);
+
+const glassBack = new THREE.Mesh(sphGeo, new THREE.MeshPhysicalMaterial({
+  color: 0xcfe8ff, transparent: true, opacity: .07, side: THREE.BackSide,
+  roughness: 0, metalness: 0, depthWrite: false }));
+glassBack.renderOrder = 2;
+
+const glassFront = new THREE.Mesh(sphGeo, new THREE.MeshPhysicalMaterial({
+  color: 0xffffff, transparent: true, opacity: .05, roughness: 0, metalness: 0,
+  clearcoat: 1, clearcoatRoughness: 0, depthWrite: false }));
+glassFront.renderOrder = 10;
+
+const glassRefl = new THREE.Mesh(sphGeo, new THREE.MeshStandardMaterial({
+  color: 0xffffff, metalness: 1, roughness: .02, transparent: true, opacity: .16,
+  blending: THREE.AdditiveBlending, depthWrite: false, envMapIntensity: 1.2 }));
+glassRefl.renderOrder = 11;
+
+const glassRim = new THREE.Mesh(new THREE.SphereGeometry(R * 1.003, 96, 64), new THREE.ShaderMaterial({
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  vertexShader: `varying vec3 vN; varying vec3 vV;
+    void main(){ vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position,1.0);
+    vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `varying vec3 vN; varying vec3 vV;
+    void main(){ float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 3.2);
+    gl_FragColor = vec4(vec3(0.72, 0.88, 1.0) * f * 0.85, 1.0); }`
+}));
+glassRim.renderOrder = 12;
+content.add(glassBack, glassFront, glassRefl, glassRim);
+
+/* Reflejos de luz (fijos respecto a la luz, no giran con la bola) */
+function makeHighlight(scale, rot, opacity) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: hlTex, rotation: rot, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
+  s.scale.set(scale[0], scale[1], 1); s.renderOrder = 13; scene.add(s); return s;
+}
+const hl1 = makeHighlight([1.1, .5], .78, .9);
+const hl2 = makeHighlight([.6, .22], .88, .45);
+const n1 = new THREE.Vector3(-.55, .55, .63).normalize();
+const n2 = new THREE.Vector3(.6, -.5, .62).normalize();
+
+/* ---------- Base circular ---------- */
+const profile = [[0,-3.3],[1.9,-3.3],[2.05,-3.18],[2.05,-2.72],[1.9,-2.55],[1.6,-2.3],
+                 [1.42,-2.05],[1.36,-1.74],[1.08,-1.68],[0,-1.68]].map(p => new THREE.Vector2(p[0], p[1]));
+const base = new THREE.Mesh(new THREE.LatheGeometry(profile, 96), new THREE.MeshPhysicalMaterial({
+  color: 0x14402b, roughness: .32, metalness: .1, clearcoat: .6, clearcoatRoughness: .25, side: THREE.DoubleSide }));
+content.add(base);
+
+const gold = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 1, roughness: .25 });
+function ring(r, tube, y) {
+  const m = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 16, 96), gold);
+  m.rotation.x = Math.PI / 2; m.position.y = y; content.add(m);
+}
+ring(1.38, .05, -1.72); ring(2.05, .035, -2.72); ring(2.05, .035, -3.17);
+
+/* ---------- Placa dorada "Feliz Navidad" ---------- */
+const plaqueCanvas = document.createElement('canvas');
+plaqueCanvas.width = 1280; plaqueCanvas.height = 200;
+function drawPlaque() {
+  const g = plaqueCanvas.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 200);
+  gr.addColorStop(0, '#f7e08a'); gr.addColorStop(.5, '#d9a82e'); gr.addColorStop(1, '#a77a14');
+  g.fillStyle = gr; g.fillRect(0, 0, 1280, 200);
+  g.strokeStyle = '#7a5410'; g.lineWidth = 6; g.strokeRect(14, 14, 1252, 172);
+  g.strokeStyle = 'rgba(255,240,170,.8)'; g.lineWidth = 2; g.strokeRect(24, 24, 1232, 152);
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = '125px "Great Vibes", "Brush Script MT", cursive';
+  g.fillStyle = 'rgba(0,0,0)'; g.fillText('Feliz Navidad', 642, 108);
+  g.fillStyle = '#4a2e05'; g.fillText('Feliz Navidad', 640, 106);
+}
+drawPlaque();
+const plaqueTex = new THREE.CanvasTexture(plaqueCanvas);
+plaqueTex.colorSpace = THREE.SRGBColorSpace; plaqueTex.anisotropy = 8;
+(document.fonts?.load('125px "Great Vibes"') ?? Promise.resolve()).then(() => {
+  drawPlaque(); plaqueTex.needsUpdate = true;
+}).catch(() => {});
+const plaque = new THREE.Mesh(
+  new THREE.CylinderGeometry(2.07, 2.07, .38, 64, 1, true, -.6, 1.2),
+  new THREE.MeshStandardMaterial({ map: plaqueTex, metalness: .75, roughness: .3 }));
+plaque.position.y = -2.95; content.add(plaque);
+
+/* ---------- Nieve del suelo + regalitos ---------- */
+const ground = (r) => r < 1.05 ? -1.7 + .28 * Math.sqrt(1 - (r / 1.05) ** 2) : -1.7;
+const mound = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), new THREE.MeshStandardMaterial({
+  color: 0xffffff, roughness: .95, emissive: 0x1a2433 }));
+mound.scale.set(1.05, .28, 1.05); mound.position.y = -1.7; content.add(mound);
+
+function gift(x, z, s, col, rot) {
+  const g = new THREE.Group();
+  const box = new THREE.Mesh(new THREE.BoxGeometry(s, s * .8, s),
+    new THREE.MeshStandardMaterial({ color: col, roughness: .5, envMapIntensity: .6 }));
+  const rib = new THREE.MeshStandardMaterial({ color: 0xf5d36a, metalness: .7, roughness: .3 });
+  g.add(box,
+    new THREE.Mesh(new THREE.BoxGeometry(s * 1.02, s * .82, s * .18), rib),
+    new THREE.Mesh(new THREE.BoxGeometry(s * .18, s * .82, s * 1.02), rib));
+  g.position.set(x, ground(Math.hypot(x, z)) + s * .4 - .02, z); g.rotation.y = rot; content.add(g);
+}
+gift(.68, .2, .22, 0xc41e3a, .4); gift(-.6, .45, .2, 0x1f6fd0, -.3);
+gift(-.55, -.4, .18, 0x7b3fe4, .8); gift(.25, .72, .15, 0x20a050, .2);
+
+/* ---------- Arbolito de Navidad ---------- */
+const tree = new THREE.Group(); content.add(tree);
+const H = .95, baseY = -1.2, step = .6, Rs = [.85, .68, .5, .32];
+const greenMat = new THREE.MeshStandardMaterial({
+  color: 0x0f7a36, roughness: .75, emissive: 0x03230d, envMapIntensity: .35 });
+const trunk = new THREE.Mesh(new THREE.CylinderGeometry(.08, .1, .5, 16),
+  new THREE.MeshStandardMaterial({ color: 0x5a3519, roughness: .9 }));
+trunk.position.y = -1.35; tree.add(trunk);
+Rs.forEach((rad, i) => {
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(rad, H, 40, 1), greenMat);
+  cone.position.y = baseY + i * step + H / 2; tree.add(cone);
+});
+
+/* Estrella */
+const sh = new THREE.Shape();
+for (let i = 0; i < 10; i++) {
+  const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? .075 : .17;
+  const x = Math.cos(a) * r, y = Math.sin(a) * r; i ? sh.lineTo(x, y) : sh.moveTo(x, y);
+}
+sh.closePath();
+const starGeo = new THREE.ExtrudeGeometry(sh, { depth: .05, bevelEnabled: true, bevelThickness: .02, bevelSize: .02, bevelSegments: 2 });
+starGeo.translate(0, 0, -.025);
+const topY = baseY + 3 * step + H + .1;
+const star = new THREE.Mesh(starGeo, new THREE.MeshStandardMaterial({
+  color: 0xffd24a, emissive: 0xffb300, emissiveIntensity: 1.4, metalness: .8, roughness: .25 }));
+star.position.y = topY; tree.add(star);
+const starGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, color: 0xffd060, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+starGlow.scale.set(.9, .9, 1); starGlow.position.y = topY; starGlow.renderOrder = 5; tree.add(starGlow);
+
+/* Esferas (adornos) */
+const orbColors = [0xd7192e, 0xf2c14e, 0x2f6fe0, 0xc0c8d4, 0xb02bd1];
+[6, 5, 4, 3].forEach((n, i) => {
+  const y0 = baseY + i * step;
+  for (let k = 0; k < n; k++) {
+    const t = .08 + Math.random() * .47, ang = k * Math.PI * 2 / n + Math.random() * .6;
+    const rr = .06 + Math.random() * .03;
+    const orb = new THREE.Mesh(new THREE.SphereGeometry(rr, 24, 16), new THREE.MeshStandardMaterial({
+      color: orbColors[(k + i) % orbColors.length], metalness: .9, roughness: .15, envMapIntensity: 1.6 }));
+    const r = Rs[i] * (1 - t) + .045;
+    orb.position.set(Math.cos(ang) * r, y0 + t * H, Math.sin(ang) * r); tree.add(orb);
+  }
+});
+
+/* Luces (guirnalda en espiral) */
+const lights = [];
+const bulbColors = [0xff3b3b, 0xffd24a, 0x4ad0ff, 0xff7ad9, 0x6bff7a, 0xffffff];
+const bulbGeo = new THREE.SphereGeometry(.035, 12, 10);
+[16, 14, 12, 10].forEach((n, i) => {
+  const y0 = baseY + i * step;
+  for (let k = 0; k < n; k++) {
+    const t = .1 + .82 * (k / (n - 1)), ang = k * 2.4 + i * 1.3, r = Rs[i] * (1 - t) + .03;
+    const col = new THREE.Color(bulbColors[(k * 3 + i) % bulbColors.length]);
+    const core = new THREE.Mesh(bulbGeo, new THREE.MeshBasicMaterial({ color: col.clone() }));
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTex, color: col, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+    glow.renderOrder = 5;
+    const p = new THREE.Vector3(Math.cos(ang) * r, y0 + t * H, Math.sin(ang) * r);
+    core.position.copy(p); glow.position.copy(p); tree.add(core, glow);
+    lights.push({ core, glow, base: col, phase: Math.random() * 6.28, speed: 1.5 + Math.random() * 2.5 });
+  }
+});
+
+/* ---------- Luz de lámpara (tenue) ---------- */
+const lampLight = new THREE.PointLight(0xffb36b, 0, 7, 2);
+lampLight.position.set(0, .1, 0); content.add(lampLight);
+const lampGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, color: 0xffb870, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+lampGlow.scale.set(3.8, 3.8, 1); lampGlow.renderOrder = 4; content.add(lampGlow);
+
+/* ---------- Nieve ---------- */
+const N = 450;
+const sPos = new Float32Array(N * 3), sVel = new Float32Array(N * 3), sRest = new Uint8Array(N);
+function spawn(i, top) {
+  let x, y, z;
+  do {
+    x = (Math.random() * 2 - 1) * 1.7; z = (Math.random() * 2 - 1) * 1.7;
+    y = top ? .6 + Math.random() * 1.0 : -1.4 + Math.random() * 3.0;
+  } while (x * x + y * y + z * z > 1.7 * 1.7);
+  sPos.set([x, y, z], i * 3); sVel.set([0, -.05, 0], i * 3); sRest[i] = 0;
+}
+for (let i = 0; i < N; i++) spawn(i, false);
+const snowGeo = new THREE.BufferGeometry();
+snowGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({
+  map: flakeTex, size: .075, transparent: true, depthWrite: false, opacity: .95 }));
+snow.frustumCulled = false; snow.renderOrder = 6; content.add(snow);
+let agit = 0;
+function updateSnow(dt, t) {
+  const drag = Math.exp(-1.8 * dt);
+  for (let i = 0; i < N; i++) {
+    const a = i * 3;
+    if (sRest[i]) {
+      if (agit > .12 && Math.random() < .25) {
+        sRest[i] = 0; sVel[a + 1] = Math.random() * 2.2 * agit + .5;
+        sVel[a] = (Math.random() - .5) * 1.5; sVel[a + 2] = (Math.random() - .5) * 1.5;
+      } else if (Math.random() < .003) spawn(i, true);
+      continue;
+    }
+    sVel[a + 1] -= .5 * dt;
+    sVel[a] += (Math.sin(t * .8 + i) * .05 + (Math.random() - .5) * agit * 6) * dt;
+    sVel[a + 2] += (Math.cos(t * .7 + i) * .05 + (Math.random() - .5) * agit * 6) * dt;
+    sVel[a] *= drag; sVel[a + 1] *= drag; sVel[a + 2] *= drag;
+    let x = sPos[a] + sVel[a] * dt, y = sPos[a + 1] + sVel[a + 1] * dt, z = sPos[a + 2] + sVel[a + 2] * dt;
+    const g = ground(Math.hypot(x, z));
+    if (y <= g) { y = g; sRest[i] = 1; sVel[a] = sVel[a + 1] = sVel[a + 2] = 0; }
+    const d = Math.hypot(x, y, z);
+    if (d > 1.82) { const k = 1.82 / d; x *= k; y *= k; z *= k; sVel[a] *= .3; sVel[a + 1] *= .3; sVel[a + 2] *= .3; }
+    sPos[a] = x; sPos[a + 1] = y; sPos[a + 2] = z;
+  }
+  snowGeo.attributes.position.needsUpdate = true;
+}
+
+/* ---------- Música ---------- */
+const music = (() => {
+  let ctx, master, audioEl, timer;
+  const SPB = .42, F = { C4: 261.63, D4: 293.66, E4: 329.63, F4: 349.23, G4: 392.0 };
+  const song = [
+    ['E4',1],['E4',1],['E4',2],['E4',1],['E4',1],['E4',2],['E4',1],['G4',1],['C4',1.5],['D4',.5],['E4',4],
+    ['F4',1],['F4',1],['F4',1.5],['F4',.5],['F4',1],['E4',1],['E4',1],['E4',.5],['E4',.5],
+    ['G4',1],['G4',1],['F4',1],['D4',1],['C4',4]
+  ];
+  function note(f, t0, d) {
+    const o = ctx.createOscillator(), o2 = ctx.createOscillator(), g = ctx.createGain(), g2 = ctx.createGain();
+    o.type = 'triangle'; o.frequency.value = f; o2.type = 'sine'; o2.frequency.value = f * 2; g2.gain.value = .25;
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.35, t0 + .01);
+    g.gain.exponentialRampToValueAtTime(.001, t0 + Math.max(d, .5) + .6);
+    o.connect(g); o2.connect(g2); g2.connect(g); g.connect(master);
+    o.start(t0); o2.start(t0); o.stop(t0 + d + 1.3); o2.stop(t0 + d + 1.3);
+  }
+  function schedule() {
+    let t = ctx.currentTime + .1;
+    for (const [n, b] of song) { note(F[n] * 2, t, b * SPB); t += b * SPB; }
+    timer = setTimeout(schedule, (t - ctx.currentTime + 1.5) * 1000);
+  }
+  return {
+    start() {
+      if (SONG_URL) {
+        audioEl = audioEl || Object.assign(new Audio(SONG_URL), { loop: true, volume: .5 });
+        audioEl.play().catch(() => {}); return;
+      }
+      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+      ctx.resume(); master = ctx.createGain(); master.gain.value = .5; master.connect(ctx.destination); schedule();
+    },
+    stop() {
+      if (audioEl) audioEl.pause();
+      if (master) {
+        const m = master; m.gain.setTargetAtTime(0, ctx.currentTime, .15);
+        clearTimeout(timer); setTimeout(() => m.disconnect(), 900); master = null;
+      }
+    }
+  };
+})();
+
+/* ---------- Botón lámpara ---------- */
+const lamp = document.getElementById('lamp'), halo = document.getElementById('halo');
+let lampOn = false, lampLevel = 0;
+lamp.addEventListener('click', () => {
+  lampOn = !lampOn;
+  lamp.classList.toggle('on', lampOn); halo.classList.toggle('on', lampOn);
+  lamp.setAttribute('aria-pressed', lampOn);
+  lampOn ? music.start() : music.stop();
+});
+
+/* ---------- Interacción: ratón y táctil ---------- */
+const cv = renderer.domElement, hint = document.getElementById('hint');
+const pointers = new Map(); const K = .008;
+let vx = 0, vy = 0, dragging = false, lastMove = 0, lastPinch = 0, zoom = 1, baseDist = 10;
+const qa = new THREE.Quaternion(), AX = new THREE.Vector3(1, 0, 0), AY = new THREE.Vector3(0, 1, 0);
+function rotateBy(ax, ay) {
+  qa.setFromAxisAngle(AY, ax); pivot.quaternion.premultiply(qa);
+  qa.setFromAxisAngle(AX, ay); pivot.quaternion.premultiply(qa);
+}
+cv.addEventListener('pointerdown', (e) => {
+  cv.setPointerCapture(e.pointerId); pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  dragging = true; vx = vy = 0; hint.style.opacity = 0;
+});
+cv.addEventListener('pointermove', (e) => {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+  if (pointers.size === 1) {
+    rotateBy(dx * K, dy * K);
+    vx = vx * .4 + dx * K * .6; vy = vy * .4 + dy * K * .6; lastMove = performance.now();
+    agit = Math.min(1, agit + Math.hypot(dx, dy) * .02);
+  } else if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (lastPinch) { zoom = THREE.MathUtils.clamp(zoom * lastPinch / d, .6, 1.6); applyZoom(); }
+    lastPinch = d;
+  }
+});
+const endPtr = (e) => {
+  pointers.delete(e.pointerId); lastPinch = 0;
+  if (performance.now() - lastMove > 80) vx = vy = 0;
+  if (!pointers.size) dragging = false;
+};
+cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault(); zoom = THREE.MathUtils.clamp(zoom * (1 + e.deltaY * .001), .6, 1.6); applyZoom();
+}, { passive: false });
+
+/* ---------- Layout ---------- */
+const tmp = new THREE.Vector3(), wp = new THREE.Vector3();
+function updateUI() {
+  camera.updateMatrixWorld();
+  tmp.set(0, -3.2, 0).project(camera);
+  lamp.style.left = (tmp.x * .5 + .5) * innerWidth + 'px';
+  lamp.style.top = (-tmp.y * .5 + .5) * innerHeight + 'px';
+  content.getWorldPosition(wp); tmp.copy(wp).project(camera);
+  halo.style.setProperty('--hx', ((tmp.x * .5 + .5) * 100).toFixed(1) + '%');
+  halo.style.setProperty('--hy', ((-tmp.y * .5 + .5) * 100).toFixed(1) + '%');
+}
+function applyZoom() {
+  camera.position.set(0, 0, baseDist * zoom); camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix(); updateUI();
+}
+function layout() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  baseDist = Math.max(3.9 / t, 2.55 / (t * camera.aspect));
+  initStars(); applyZoom();
+}
+addEventListener('resize', layout); layout();
+
+/* ---------- Animación ---------- */
+const clock = new THREE.Clock(); let time = 0;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), .05); time += dt;
+
+  if (!dragging && (Math.abs(vx) > 1e-4 || Math.abs(vy) > 1e-4)) {
+    rotateBy(vx * dt * 60, vy * dt * 60);
+    const f = Math.pow(.94, dt * 60); vx *= f; vy *= f;
+    agit = Math.min(1, agit + Math.hypot(vx, vy) * 1.5);
+  }
+  pivot.quaternion.normalize();
+  agit *= Math.exp(-1.2 * dt);
+
+  /* reflejos siguen al centro de la esfera */
+  content.getWorldPosition(wp);
+  hl1.position.copy(wp).addScaledVector(n1, 2.02);
+  hl2.position.copy(wp).addScaledVector(n2, 2.02);
+
+  /* lámpara y luces del árbol */
+  lampLevel += ((lampOn ? 1 : 0) - lampLevel) * Math.min(1, dt * 2.5);
+  const treeLevel = .3 + .7 * lampLevel;
+  lampLight.intensity = lampLevel * 3 * (.93 + .07 * Math.sin(time * 2.2));
+  lampGlow.material.opacity = lampLevel * .22;
+  for (const L of lights) {
+    const tw = .55 + .45 * Math.sin(time * L.speed + L.phase), k = treeLevel * (.5 + .5 * tw);
+    L.core.material.color.copy(L.base).multiplyScalar(.35 + 1.2 * k);
+    L.glow.material.opacity = Math.min(1, k * 1.1);
+    const s = .26 * (.8 + .4 * tw); L.glow.scale.set(s, s, 1);
+  }
+  star.rotation.y = time * .8;
+  starGlow.material.opacity = treeLevel * (.7 + .3 * Math.sin(time * 2));
+
+  updateSnow(dt, time);
+  updateUI();
+  drawStars(time);
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
